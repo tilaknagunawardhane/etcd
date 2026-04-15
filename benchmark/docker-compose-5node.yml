@@ -1,0 +1,118 @@
+# ──────────────────────────────────────────────────────────────────────────────
+#  5-Node etcd Cluster
+#  Run with: docker compose -f docker-compose-5node.yml -p etcd5 up -d --build
+#  Client ports (host):  node1=12379  node2=22379  node3=32379
+#                        node4=42379  node5=52379
+# ──────────────────────────────────────────────────────────────────────────────
+
+networks:
+  etcd-net:
+    driver: bridge
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:
+  n4-data:
+  n5-data:
+
+
+x-etcd-common: &etcd-common
+  build:
+    context: ..
+    dockerfile: benchmark/Dockerfile
+  networks:
+    - etcd-net
+  restart: "no"
+  environment: &etcd-env
+    ETCD_INITIAL_CLUSTER: "node1=http://node1:2380,node2=http://node2:2380,node3=http://node3:2380,node4=http://node4:2380,node5=http://node5:2380"
+    ETCD_INITIAL_CLUSTER_STATE: "new"
+    ETCD_INITIAL_CLUSTER_TOKEN: "etcd-5node-benchmark"
+    ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+    ETCD_LISTEN_PEER_URLS: "http://0.0.0.0:2380"
+    ETCD_DATA_DIR: "/data"
+    ETCD_HEARTBEAT_INTERVAL: "100"
+    ETCD_ELECTION_TIMEOUT: "1000"
+    ETCDCTL_API: "3"
+  healthcheck:
+    test: [ "CMD", "curl", "-sf", "http://localhost:2379/health" ]
+    interval: 5s
+    timeout: 5s
+    retries: 12
+    start_period: 40s
+
+services:
+  node1:
+    <<: *etcd-common
+    container_name: etcd5-node1
+    hostname: node1
+    environment:
+      <<: *etcd-env
+      ETCD_NAME: "node1"
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: "http://node1:2380"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://node1:2379"
+    volumes:
+      - n1-data:/data
+    ports:
+      - "12379:2379"
+      - "12380:2380"
+
+  node2:
+    <<: *etcd-common
+    container_name: etcd5-node2
+    hostname: node2
+    environment:
+      <<: *etcd-env
+      ETCD_NAME: "node2"
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: "http://node2:2380"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://node2:2379"
+    volumes:
+      - n2-data:/data
+    ports:
+      - "22379:2379"
+      - "22380:2380"
+
+  node3:
+    <<: *etcd-common
+    container_name: etcd5-node3
+    hostname: node3
+    environment:
+      <<: *etcd-env
+      ETCD_NAME: "node3"
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: "http://node3:2380"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://node3:2379"
+    volumes:
+      - n3-data:/data
+    ports:
+      - "32379:2379"
+      - "32380:2380"
+
+  node4:
+    <<: *etcd-common
+    container_name: etcd5-node4
+    hostname: node4
+    environment:
+      <<: *etcd-env
+      ETCD_NAME: "node4"
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: "http://node4:2380"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://node4:2379"
+    volumes:
+      - n4-data:/data
+    ports:
+      - "42379:2379"
+      - "42380:2380"
+
+  node5:
+    <<: *etcd-common
+    container_name: etcd5-node5
+    hostname: node5
+    environment:
+      <<: *etcd-env
+      ETCD_NAME: "node5"
+      ETCD_INITIAL_ADVERTISE_PEER_URLS: "http://node5:2380"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://node5:2379"
+    volumes:
+      - n5-data:/data
+    ports:
+      - "52379:2379"
+      - "52380:2380"

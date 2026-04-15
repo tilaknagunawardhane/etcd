@@ -1,0 +1,6 @@
+Cluster Start Time,No of Nodes,Cluster End Time
+2026-04-13 22:40:49.227028,3,2026-04-13 22:40:57.645563
+
+Term Number,Leader Failure Detection Duration (s),Who Initiated Election,Who Became Leader,Leader Election Duration (s),Out of Service Time (s),Average Heartbeat Interval (s),Rejoining Nodes & Recovery Time (s)
+3,NA,node1,node2,-0.0409,NA,NA,None
+4,0.3211,node1,node3,-0.2424,0.0787,NA,"Node node2: downtime 4.6594s, recovery 0.7577s"
