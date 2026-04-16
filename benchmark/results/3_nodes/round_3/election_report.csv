@@ -1,6 +1,12 @@
 Cluster Start Time,No of Nodes,Cluster End Time
-2026-04-13 22:41:18.075828,3,2026-04-13 22:41:26.338460
+2026-04-16 12:41:24.564752,3,2026-04-16 12:41:57.421035
 
-Term Number,Leader Failure Detection Duration (s),Who Initiated Election,Who Became Leader,Leader Election Duration (s),Out of Service Time (s),Average Heartbeat Interval (s),Rejoining Nodes & Recovery Time (s)
-4,NA,node1,node3,-0.0339,NA,NA,None
-5,0.2717,node2,node1,-0.0341,0.2376,NA,"Node node3: downtime 4.6479s, recovery 0.5117s"
+Failure Index,Term Number,Leader Failure Detection Duration (s),Who Initiated Election,Who Became Leader,Leader Election Duration (s),Out of Service Time (s),Average Heartbeat Interval (s),Heartbeat Interval Std Dev (s),Rejoining Nodes & Recovery Time (s)
+1,10,NA,node1,node3,-0.033529,NA,NA,NA,None
+1,11,0.238416,node2,node1,-0.026674,0.211742,NA,NA,"Node node3: downtime 3.505742s, recovery 27.347925s"
+2,11,NA,node2,node1,-0.062009,NA,NA,NA,None
+2,12,0.219126,node3,node2,-0.032837,0.186289,NA,NA,"Node node1: downtime 3.571359s, recovery 0.308643s"
+3,12,NA,node1,node2,-0.035312,NA,NA,NA,None
+3,13,0.273731,node1,node3,0.029672,0.303403,NA,NA,"Node node2: downtime 3.515282s, recovery 0.385734s"
+4,13,NA,node1,node3,-0.008247,NA,NA,NA,None
+4,14,0.300255,node2,node1,-0.027568,0.272687,NA,NA,"Node node3: downtime 3.536105s, recovery 0.369454s"

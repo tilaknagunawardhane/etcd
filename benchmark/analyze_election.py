@@ -3,19 +3,28 @@
 analyze_election.py
 ===================
 
-Reads a single events.csv produced by run_experiment.py and writes a
-structured election_report.csv compatible with the chart scripts.
+Reads event CSV files produced by run_experiment.py for a single round
+and writes a structured election_report.csv compatible with the chart scripts.
 
 Usage:
-    python analyze_election.py <events.csv> <output_report.csv> <cluster_size>
+    python analyze_election.py <round_dir> <output_report.csv> <cluster_size>
+
+    <round_dir> is the round folder, e.g.:
+        results/3_nodes/round_1/
+
+    It will read:
+        • events.csv            (merged, all nodes)
+        • events_node1.csv      (per-node, used for per-node charts)
+        • events_node2.csv  …
 
 Input CSV row format (no header):
-    timestamp, event, node_id, term
+    timestamp, event, node_id, term, failure_index
 
-    timestamp  : "YYYY-MM-DD HH:MM:SS.ffffff"
-    event      : free-text event string (see below)
-    node_id    : e.g. "node1"
-    term       : integer Raft term
+    timestamp     : "YYYY-MM-DD HH:MM:SS.ffffff"  (microsecond precision)
+    event         : free-text event string (see below)
+    node_id       : e.g. "node1"
+    term          : integer Raft term
+    failure_index : integer 1-4, which kill-cycle this event belongs to
 
 Key events recognised:
     leader failure            - reference time for failure detection
@@ -32,18 +41,23 @@ Output CSV:
     Row 1 (header): Cluster Start Time, No of Nodes, Cluster End Time
     Row 2 (data):   <start_ts>, <N>, <end_ts>
     Row 3:          (blank)
-    Row 4 (header): Term Number, Leader Failure Detection Duration (s),
+    Row 4 (header): Failure Index, Term Number,
+                    Leader Failure Detection Duration (s),
                     Who Initiated Election, Who Became Leader,
                     Leader Election Duration (s), Out of Service Time (s),
                     Average Heartbeat Interval (s),
+                    Heartbeat Interval Std Dev (s),
                     Rejoining Nodes & Recovery Time (s)
     Row 5+          one row per term that had election activity
 """
 
 import csv
+import glob
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
+import math
 
 
 # ---------------------------------------------------------------------------
@@ -54,31 +68,53 @@ def _parse_ts(ts_str: str) -> datetime:
     return datetime.strptime(ts_str.strip(), "%Y-%m-%d %H:%M:%S.%f")
 
 
+def _fmt(seconds: float) -> str:
+    """Format a duration with 6 decimal places."""
+    return "{:.6f}".format(seconds)
+
+
 # ---------------------------------------------------------------------------
 #  Core analysis
 # ---------------------------------------------------------------------------
 
-def analyze(events_csv: str, output_csv: str, cluster_size: int) -> None:
+def analyze(round_dir: str, output_csv: str, cluster_size: int) -> None:
 
-    # -- Load events ---------------------------------------------------------
-    events = []
-    with open(events_csv, "r", newline="", encoding="utf-8") as f:
-        for row in csv.reader(f):
-            if len(row) < 3:
-                continue
-            try:
-                events.append({
-                    "time":    _parse_ts(row[0]),
-                    "event":   row[1].strip(),
-                    "node_id": row[2].strip(),
-                    "term":    int(row[3].strip()) if len(row) > 3 else 0,
-                })
-            except Exception:
-                pass  # skip malformed rows
+    round_path = Path(round_dir)
+
+    # -- Load events from all CSV files in the round dir --------------------
+    # Primary source: merged events.csv (all nodes, sorted by orchestrator)
+    # We also check per-node files so nothing is missed if merged is empty.
+    all_event_files = [round_path / "events.csv"] + sorted(
+        round_path.glob("events_node*.csv")
+    )
+
+    seen_rows: set[tuple] = set()   # deduplicate across merged + per-node files
+    events: list[dict]    = []
+
+    for ev_file in all_event_files:
+        if not ev_file.exists():
+            continue
+        with open(ev_file, "r", newline="", encoding="utf-8") as f:
+            for row in csv.reader(f):
+                if len(row) < 3:
+                    continue
+                key = tuple(row)
+                if key in seen_rows:
+                    continue
+                seen_rows.add(key)
+                try:
+                    events.append({
+                        "time":          _parse_ts(row[0]),
+                        "event":         row[1].strip(),
+                        "node_id":       row[2].strip(),
+                        "term":          int(row[3].strip()) if len(row) > 3 else 0,
+                        "failure_index": int(row[4].strip()) if len(row) > 4 else 0,
+                    })
+                except Exception:
+                    pass   # skip malformed rows
 
     if not events:
-        print(f"[analyze] No valid events found in {events_csv}")
-        # Write an empty-but-valid report so chart scripts don't crash
+        print(f"[analyze] No valid events found in {round_dir}")
         _write_empty_report(output_csv, cluster_size)
         return
 
@@ -86,35 +122,39 @@ def analyze(events_csv: str, output_csv: str, cluster_size: int) -> None:
     cluster_start = events[0]["time"]
     cluster_end   = events[-1]["time"]
 
-    # -- Build per-term data structures --------------------------------------
-    terms = {}
-    last_failure_time = None
-    last_node_failure = {}  # node_id -> datetime of last failure
+    # -- Build per-(failure_index, term) data structures --------------------
+    # Key: (failure_index, term)  — supports repeated terms across cycles
+    records: dict[tuple[int, int], dict] = {}
+    last_failure_time:  dict[int, datetime]  = {}   # failure_index -> datetime
+    last_node_failure:  dict[str, datetime]  = {}   # node_id -> datetime
 
-    def _init_term(t):
-        if t not in terms:
-            terms[t] = {
+    def _init_record(fi: int, t: int):
+        key = (fi, t)
+        if key not in records:
+            records[key] = {
+                "failure_index":    fi,
                 "term":             t,
-                "detected_time":    None,   # "became candidate" timestamp
-                "initiated_by":     None,   # node_id first candidate
-                "leader_time":      None,   # "became leader" timestamp
-                "leader_id":        None,   # node_id that became leader
-                "failure_time":     last_failure_time,
-                "heartbeats":       {},     # dest -> [timestamps]
-                "recovering_nodes": [],     # [(node_id, downtime, rec_dur)]
+                "detected_time":    None,
+                "initiated_by":     None,
+                "leader_time":      None,
+                "leader_id":        None,
+                "failure_time":     last_failure_time.get(fi),
+                "heartbeats":       {},   # dest -> [timestamps]
+                "recovering_nodes": [],   # [(node_id, downtime, rec_dur)]
             }
 
     for idx, e in enumerate(events):
         term = e["term"]
         evt  = e["event"]
         nid  = e["node_id"]
+        fi   = e["failure_index"]
 
         # -- Failure markers
         if "leader failure" in evt or "node failure" in evt:
-            last_failure_time      = e["time"]
-            last_node_failure[nid] = e["time"]
+            last_failure_time[fi]    = e["time"]
+            last_node_failure[nid]   = e["time"]
 
-        _init_term(term)
+        _init_record(fi, term)
 
         # -- Node recovery tracking
         if "node started" in evt:
@@ -145,24 +185,26 @@ def analyze(events_csv: str, output_csv: str, cluster_size: int) -> None:
                 T_end_rec = last_app_time or T_first_hb or T_start
 
             rec_dur = (T_end_rec - T_start).total_seconds()
-            terms[term]["recovering_nodes"].append((nid, downtime, rec_dur))
+            records[(fi, term)]["recovering_nodes"].append((nid, downtime, rec_dur))
 
         # -- Candidate detected (election started)
         if "became candidate" in evt:
-            if terms[term]["detected_time"] is None:
-                terms[term]["detected_time"] = e["time"]
-                terms[term]["initiated_by"]  = nid
+            rec = records[(fi, term)]
+            if rec["detected_time"] is None:
+                rec["detected_time"] = e["time"]
+                rec["initiated_by"]  = nid
 
         # -- Leader elected
         if "became leader" in evt:
-            if terms[term]["leader_time"] is None:
-                terms[term]["leader_time"] = e["time"]
-                terms[term]["leader_id"]   = nid
+            rec = records[(fi, term)]
+            if rec["leader_time"] is None:
+                rec["leader_time"] = e["time"]
+                rec["leader_id"]   = nid
 
         # -- Heartbeat tracking
         if "sent heartbeat to" in evt:
             dest = evt.split("to ")[-1].strip()
-            terms[term]["heartbeats"].setdefault(dest, []).append(e["time"])
+            records[(fi, term)]["heartbeats"].setdefault(dest, []).append(e["time"])
 
     # -- Write report --------------------------------------------------------
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
@@ -179,6 +221,7 @@ def analyze(events_csv: str, output_csv: str, cluster_size: int) -> None:
 
         # Column headers
         w.writerow([
+            "Failure Index",
             "Term Number",
             "Leader Failure Detection Duration (s)",
             "Who Initiated Election",
@@ -186,69 +229,82 @@ def analyze(events_csv: str, output_csv: str, cluster_size: int) -> None:
             "Leader Election Duration (s)",
             "Out of Service Time (s)",
             "Average Heartbeat Interval (s)",
+            "Heartbeat Interval Std Dev (s)",
             "Rejoining Nodes & Recovery Time (s)",
         ])
 
-        # One data row per term that had election activity
-        for term in sorted(terms):
-            d = terms[term]
+        # One data row per (failure_index, term) that had election activity,
+        # sorted by failure_index first, then term
+        for (fi, term) in sorted(records.keys()):
+            d = records[(fi, term)]
             if d["detected_time"] is None and d["leader_time"] is None:
-                continue  # no election activity in this term
+                continue   # no election activity in this record
 
-            # Failure detection duration (failure -> first candidate)
+            # Failure detection duration (failure → first candidate)
             det_str = "NA"
             if d["failure_time"] and d["detected_time"]:
                 if d["detected_time"] > d["failure_time"]:
-                    det_str = "{:.4f}".format(
+                    det_str = _fmt(
                         (d["detected_time"] - d["failure_time"]).total_seconds()
                     )
 
-            # Out-of-service duration (failure -> new leader confirmed)
+            # Out-of-service duration (failure → new leader confirmed)
             oos_str = "NA"
             if d["failure_time"] and d["leader_time"]:
                 if d["leader_time"] > d["failure_time"]:
-                    oos_str = "{:.4f}".format(
+                    oos_str = _fmt(
                         (d["leader_time"] - d["failure_time"]).total_seconds()
                     )
 
-            # Election duration (first candidate -> new leader)
+            # Election duration (first candidate → new leader)
             elec_str = "NA"
             if d["detected_time"] and d["leader_time"]:
-                elec_str = "{:.4f}".format(
+                elec_str = _fmt(
                     (d["leader_time"] - d["detected_time"]).total_seconds()
                 )
 
-            # Average heartbeat interval
-            hb_str    = "NA"
-            intervals = []
+            # Average + std-dev heartbeat interval
+            hb_avg_str = "NA"
+            hb_std_str = "NA"
+            intervals  = []
             for times in d["heartbeats"].values():
-                times.sort()
-                for i in range(1, len(times)):
-                    intervals.append((times[i] - times[i - 1]).total_seconds())
+                times_sorted = sorted(times)
+                for i in range(1, len(times_sorted)):
+                    intervals.append(
+                        (times_sorted[i] - times_sorted[i - 1]).total_seconds()
+                    )
             if intervals:
-                hb_str = "{:.4f}".format(sum(intervals) / len(intervals))
+                avg = sum(intervals) / len(intervals)
+                hb_avg_str = _fmt(avg)
+                if len(intervals) > 1:
+                    variance = sum((x - avg) ** 2 for x in intervals) / len(intervals)
+                    hb_std_str = _fmt(math.sqrt(variance))
+                else:
+                    hb_std_str = _fmt(0.0)
 
             # Node recovery summary string
             rec_str = "None"
             if d["recovering_nodes"]:
                 parts = []
                 for node_id, down, rec in d["recovering_nodes"]:
-                    down_s = "{:.4f}s".format(down) if down is not None else "Unknown"
+                    down_s = "{}s".format(_fmt(down)) if down is not None else "Unknown"
                     parts.append(
-                        "Node {}: downtime {}, recovery {:.4f}s".format(
-                            node_id, down_s, rec
+                        "Node {}: downtime {}, recovery {}s".format(
+                            node_id, down_s, _fmt(rec)
                         )
                     )
                 rec_str = " | ".join(parts)
 
             w.writerow([
+                fi,
                 term,
                 det_str,
                 d["initiated_by"] or "Unknown",
                 d["leader_id"]    or "Unknown",
                 elec_str,
                 oos_str,
-                hb_str,
+                hb_avg_str,
+                hb_std_str,
                 rec_str,
             ])
 
@@ -264,6 +320,7 @@ def _write_empty_report(output_csv: str, cluster_size: int) -> None:
         w.writerow([now_str, cluster_size, now_str])
         w.writerow([])
         w.writerow([
+            "Failure Index",
             "Term Number",
             "Leader Failure Detection Duration (s)",
             "Who Initiated Election",
@@ -271,6 +328,7 @@ def _write_empty_report(output_csv: str, cluster_size: int) -> None:
             "Leader Election Duration (s)",
             "Out of Service Time (s)",
             "Average Heartbeat Interval (s)",
+            "Heartbeat Interval Std Dev (s)",
             "Rejoining Nodes & Recovery Time (s)",
         ])
     print("[analyze] Empty report written -> {}".format(output_csv))
@@ -282,19 +340,19 @@ def _write_empty_report(output_csv: str, cluster_size: int) -> None:
 
 def main():
     if len(sys.argv) < 4:
-        print("Usage: analyze_election.py <events.csv> <output_report.csv> <cluster_size>")
+        print("Usage: analyze_election.py <round_dir> <output_report.csv> <cluster_size>")
         sys.exit(1)
 
-    events_csv   = sys.argv[1]
+    round_dir    = sys.argv[1]
     output_csv   = sys.argv[2]
     cluster_size = int(sys.argv[3])
 
-    if not os.path.exists(events_csv):
-        print("Error: events file not found: {}".format(events_csv))
+    if not os.path.isdir(round_dir):
+        print("Error: round_dir not found: {}".format(round_dir))
         _write_empty_report(output_csv, cluster_size)
-        sys.exit(0)  # Don't fail hard — let the orchestrator continue
+        sys.exit(0)
 
-    analyze(events_csv, output_csv, cluster_size)
+    analyze(round_dir, output_csv, cluster_size)
 
 
 if __name__ == "__main__":

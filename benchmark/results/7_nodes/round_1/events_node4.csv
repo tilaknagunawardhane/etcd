@@ -1,0 +1,13 @@
+2026-04-16 12:49:20.063170,became candidate,node4,2,1
+2026-04-16 12:49:22.389140,became candidate,node4,3,1
+2026-04-16 12:49:29.436920,became candidate,node4,3,2
+2026-04-16 12:49:31.579869,became leader,node4,4,2
+2026-04-16 12:49:38.679741,became leader,node4,4,3
+2026-04-16 12:49:38.749592,became leader,node4,4,3
+2026-04-16 12:49:40.682364,leader failure,node4,4,3
+2026-04-16 12:49:44.418583,node started,node4,5,3
+2026-04-16 12:49:44.784812,append entries,node4,5,3
+2026-04-16 12:49:44.785322,received heartbeat,node4,5,3
+2026-04-16 12:49:44.861032,became candidate,node4,5,3
+2026-04-16 12:49:48.163143,became candidate,node4,5,4
+2026-04-16 12:49:50.200961,became candidate,node4,6,4

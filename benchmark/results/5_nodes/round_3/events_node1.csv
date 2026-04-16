@@ -1,0 +1,8 @@
+2026-04-16 12:46:16.944896,became candidate,node1,10,1
+2026-04-16 12:46:19.134158,became candidate,node1,11,1
+2026-04-16 12:46:26.048407,became candidate,node1,11,2
+2026-04-16 12:46:28.198285,became candidate,node1,12,2
+2026-04-16 12:46:35.319738,became candidate,node1,12,3
+2026-04-16 12:46:37.422077,became candidate,node1,13,3
+2026-04-16 12:46:44.387193,became candidate,node1,13,4
+2026-04-16 12:46:46.677690,became leader,node1,14,4
